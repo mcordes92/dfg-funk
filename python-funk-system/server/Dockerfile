@@ -16,11 +16,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy server files
 COPY . .
 
-# Create data directory
-RUN mkdir -p /app/data
+# Create data and updates directories
+RUN mkdir -p /app/data /app/updates
 
-# Create volume mount point for database
-VOLUME ["/app/data"]
+# Create volume mount points for database and updates
+VOLUME ["/app/data", "/app/updates"]
 
 # Expose ports
 EXPOSE 5000/udp

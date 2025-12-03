@@ -7,3 +7,8 @@ USER_ID = 1
 HOTKEY_PRIMARY = 'f7'
 HOTKEY_SECONDARY = 'f8'
 JITTER_BUFFER_SIZE = 3
+
+# Audio Codec Settings
+AUDIO_CODEC = 'opus'  # 'opus' or 'pcm' (opus.dll is bundled in EXE)
+OPUS_BITRATE = 24000  # 24 kbit/s (good quality for voice)
+OPUS_FRAME_SIZE = 960  # 20ms at 48kHz sample rate

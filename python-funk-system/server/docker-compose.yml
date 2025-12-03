@@ -10,6 +10,7 @@ services:
       - "8000:8000"      # HTTP API Port
     volumes:
       - ./data:/app/data  # Persistent database storage
+      - ./updates:/app/updates  # Persistent client updates storage
       - ./.env:/app/.env  # Environment variables
     environment:
       - DATABASE_PATH=/app/data/funkserver.db

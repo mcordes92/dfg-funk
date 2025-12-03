@@ -61,7 +61,7 @@ class FunkClient:
         """Check for updates from server and prompt user if available"""
         try:
             server_host = self.window.settings.get("server_ip", "srv01.dus.cordesm.de")
-            api_port = self.window.settings.get("api_port", 8001)
+            api_port = self.window.settings.get("api_port", 8000)
             
             # Get version info
             response = requests.get(
@@ -70,7 +70,7 @@ class FunkClient:
             )
             
             if response.status_code != 200:
-                logger.warning(f"Konnte nicht nach Updates suchen: HTTP {response.status_code}")
+                logger.warning(f"Konnte nicht nach Updates suchen 1: HTTP {response.status_code}")
                 return
             
             data = response.json()
@@ -131,7 +131,7 @@ class FunkClient:
                 logger.info(f"Client ist aktuell (Version {CLIENT_VERSION})")
                 
         except requests.exceptions.RequestException as e:
-            logger.warning(f"Konnte nicht nach Updates suchen: {e}")
+            logger.warning(f"Konnte nicht nach Updates suchen 2: {e}")
         except Exception as e:
             logger.error(f"Fehler beim Update-Check: {e}")
     

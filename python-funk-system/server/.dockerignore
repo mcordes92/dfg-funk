@@ -16,6 +16,9 @@ ENV/
 *.db-journal
 data/
 
+# Updates directory (mounted as volume)
+updates/
+
 # Logs
 *.log
 

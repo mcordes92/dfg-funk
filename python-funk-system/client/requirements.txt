@@ -9,3 +9,6 @@ Pillow>=10.0.0
 pygame>=2.5.0
 pynput>=1.7.6
 python-multipart>=0.0.20
+opuslib>=3.0.1
+# webrtcvad>=2.0.10  # Optional: Benötigt C++ Compiler auf Windows
+                      # Fallback: python_vad.py (pure Python implementation)

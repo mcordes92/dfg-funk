@@ -17,6 +17,7 @@ services:
       - UDP_PORT=5000
     volumes:
       - funk-data:/app/data
+      - funk-updates:/app/updates
     networks:
       - funk-network
     healthcheck:
@@ -28,6 +29,8 @@ services:
 
 volumes:
   funk-data:
+    driver: local
+  funk-updates:
     driver: local
 
 networks:
