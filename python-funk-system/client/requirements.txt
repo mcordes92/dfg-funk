@@ -1,0 +1,11 @@
+PySide6>=6.8.0
+sounddevice>=0.4.6
+keyboard>=0.13.5
+requests>=2.31.0
+scipy>=1.11.0
+numpy>=1.26.0
+PyInstaller>=6.11.0
+Pillow>=10.0.0
+pygame>=2.5.0
+pynput>=1.7.6
+python-multipart>=0.0.20

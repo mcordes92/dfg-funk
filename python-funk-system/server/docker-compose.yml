@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  funk-server:
+    build: .
+    container_name: dfg-funk-server
+    restart: unless-stopped
+    ports:
+      - "5000:5000/udp"  # UDP VoIP Port
+      - "8000:8000"      # HTTP API Port
+    volumes:
+      - ./data:/app/data  # Persistent database storage
+      - ./.env:/app/.env  # Environment variables
+    environment:
+      - DATABASE_PATH=/app/data/funkserver.db
+    networks:
+      - funk-network
+
+networks:
+  funk-network:
+    driver: bridge
