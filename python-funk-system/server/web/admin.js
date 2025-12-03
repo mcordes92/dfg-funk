@@ -248,6 +248,11 @@ async function loadChannels() {
                     <td>${usage.name || `Kanal ${i} (Allgemein)`} 📢</td>
                     <td>${usage.unique_users || 0}</td>
                     <td>${usage.total_connections || 0}</td>
+                    <td>
+                        <button onclick="sendTestTone(${i})" class="btn-secondary" title="Test-Ton senden">
+                            🔊 Test
+                        </button>
+                    </td>
                 </tr>
             `;
         }
@@ -260,6 +265,11 @@ async function loadChannels() {
                     <td>${usage.name || `Kanal ${i}`} 🔒</td>
                     <td>${usage.unique_users || 0}</td>
                     <td>${usage.total_connections || 0}</td>
+                    <td>
+                        <button onclick="sendTestTone(${i})" class="btn-secondary" title="Test-Ton senden">
+                            🔊 Test
+                        </button>
+                    </td>
                 </tr>
             `;
         }
@@ -685,6 +695,41 @@ async function uploadUpdate(event) {
         progressDiv.style.display = 'none';
         uploadBtn.disabled = false;
         uploadBtn.textContent = '📤 Version hochladen';
+    }
+}
+
+// Send test tone to channel
+async function sendTestTone(channelId) {
+    try {
+        const button = event.target;
+        const originalText = button.innerHTML;
+        button.disabled = true;
+        button.innerHTML = '⏳ Sende...';
+        
+        const response = await fetch(`${API_BASE}/api/channels/${channelId}/test-tone`, {
+            method: 'POST',
+            headers: getAuthHeaders()
+        });
+        
+        if (response.ok) {
+            const data = await response.json();
+            showAlert(`Test-Ton wird an ${data.channel_name} gesendet`, 'success');
+            button.innerHTML = '✅ Gesendet';
+            setTimeout(() => {
+                button.disabled = false;
+                button.innerHTML = originalText;
+            }, 2000);
+        } else {
+            const error = await response.json();
+            showAlert(error.detail || 'Fehler beim Senden', 'error');
+            button.disabled = false;
+            button.innerHTML = originalText;
+        }
+    } catch (error) {
+        console.error('Error sending test tone:', error);
+        showAlert('Fehler beim Senden des Test-Tons', 'error');
+        event.target.disabled = false;
+        event.target.innerHTML = '🔊 Test';
     }
 }
 

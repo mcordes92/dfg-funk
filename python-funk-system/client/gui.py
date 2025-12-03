@@ -1,18 +1,21 @@
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                               QLabel, QLineEdit, QPushButton, QSpinBox, QComboBox, QDialog, QDialogButtonBox, QApplication, QCheckBox, QSlider, QProgressBar, QTabWidget)
+                               QLabel, QLineEdit, QPushButton, QSpinBox, QComboBox, QDialog, QDialogButtonBox, QApplication, QCheckBox, QSlider, QProgressBar, QTabWidget, QFrame)
 from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QPixmap, QPainter
+from PySide6.QtGui import QPixmap, QPainter, QCursor
 import sounddevice as sd
 import os
 from settings import Settings
 from audio_in import AudioInput
 from sound_manager import SoundManager
+from connection_stats_dialog import ConnectionStatsDialog
 
 
 class MainWindow(QMainWindow):
     connect_requested = Signal(str, int, int, str, str, int, int, str, int)  # Added api_port as 9th parameter
     disconnect_requested = Signal()
     volume_changed = Signal(int)  # Signal for volume changes (0-100)
+    rx_received = Signal(int, int)  # Signal for RX indicator (channel, jitter_ms)
+    channel_changed = Signal(int)  # Signal for channel change without reconnect
 
     def __init__(self):
         super().__init__()
@@ -28,6 +31,12 @@ class MainWindow(QMainWindow):
         self.is_connected = False
         self.blink_state = False
         self.allowed_channels = []  # Will be populated from server
+        self.current_signal_strength = 0  # Signal strength 0-100
+        self.receiving_from_channel = None  # Kanal von dem gerade empfangen wird
+        
+        # Connection stats dialog
+        self.stats_dialog = None
+        self.network_client = None  # Will be set from main.py
         
         # Window dragging
         self.drag_position = None
@@ -135,43 +144,131 @@ class MainWindow(QMainWindow):
         
         display_frame = QWidget(central_widget)
         self.display_frame = display_frame
-        display_frame.setStyleSheet("background: transparent;")
-        
-        display_layout = QVBoxLayout(display_frame)
-        display_layout.setContentsMargins(5, 5, 5, 5)
-        display_layout.setSpacing(2)
-        
-        # Status line
-        self.display_label = QLabel("OFFLINE", display_frame)
-        self.display_label.setAlignment(Qt.AlignCenter)
-        self.display_label.setStyleSheet("""
-            color: #1a1a1a; 
-            font-size: 11pt; 
-            font-weight: bold; 
-            background: transparent;
+        display_frame.setStyleSheet("""
+            background: #8cb899;
+            border: 3px solid #2a2a2a;
+            border-radius: 4px;
         """)
-        display_layout.addWidget(self.display_label)
         
-        # Channel info
-        self.channel_label = QLabel("K41", display_frame)
-        self.channel_label.setAlignment(Qt.AlignCenter)
-        self.channel_label.setStyleSheet("""
-            color: #2a2a2a; 
-            font-size: 9pt; 
-            font-weight: bold; 
-            background: transparent;
+        # Main horizontal layout
+        main_display_layout = QHBoxLayout(display_frame)
+        main_display_layout.setContentsMargins(8, 6, 8, 6)
+        main_display_layout.setSpacing(6)
+        
+        # Left side - Main info area
+        left_layout = QVBoxLayout()
+        left_layout.setSpacing(2)
+        
+        # Top row - Status indicators
+        top_row = QHBoxLayout()
+        top_row.setSpacing(8)
+        
+        # Latency display box (oben links)
+        latency_box = QFrame(display_frame)
+        latency_box.setStyleSheet("""
+            QFrame {
+                background: #7aa085;
+                border: 1px solid #2a2a2a;
+                border-radius: 2px;
+            }
         """)
-        display_layout.addWidget(self.channel_label)
+        latency_box_layout = QVBoxLayout(latency_box)
+        latency_box_layout.setContentsMargins(4, 2, 4, 2)
         
-        # Connection info
-        self.info_label = QLabel("---", display_frame)
+        self.latency_label = QLabel("60ms", latency_box)
+        self.latency_label.setAlignment(Qt.AlignCenter)
+        self.latency_label.setStyleSheet("""
+            color: #000000;
+            font-size: 8pt;
+            font-weight: bold;
+            font-family: 'Consolas', 'Courier New', monospace;
+            background: transparent;
+            border: none;
+        """)
+        # Make latency label clickable
+        self.latency_label.setCursor(QCursor(Qt.PointingHandCursor))
+        self.latency_label.mousePressEvent = lambda event: self.open_connection_stats()
+        latency_box_layout.addWidget(self.latency_label)
+        top_row.addWidget(latency_box)
+        
+        top_row.addStretch()
+        
+        # RX Channel box (oben rechts, zeigt empfangenen Kanal)
+        self.rx_channel_box = QFrame(display_frame)
+        self.rx_channel_box.setStyleSheet("""
+            QFrame {
+                background: #7aa085;
+                border: 1px solid #2a2a2a;
+                border-radius: 2px;
+            }
+        """)
+        rx_channel_layout = QVBoxLayout(self.rx_channel_box)
+        rx_channel_layout.setContentsMargins(4, 2, 4, 2)
+        
+        self.info_label = QLabel("K42", self.rx_channel_box)
         self.info_label.setAlignment(Qt.AlignCenter)
         self.info_label.setStyleSheet("""
-            color: #3a3a3a; 
-            font-size: 7pt; 
+            color: #000000;
+            font-size: 8pt;
+            font-weight: bold;
+            font-family: 'Consolas', 'Courier New', monospace;
             background: transparent;
+            border: none;
         """)
-        display_layout.addWidget(self.info_label)
+        rx_channel_layout.addWidget(self.info_label)
+        self.rx_channel_box.hide()
+        top_row.addWidget(self.rx_channel_box)
+        
+        left_layout.addLayout(top_row)
+        
+        # Middle - Channel number (etwas kleiner)
+        channel_box = QFrame(display_frame)
+        channel_box.setStyleSheet("""
+            QFrame {
+                background: #7aa085;
+                border: 2px solid #2a2a2a;
+                border-radius: 3px;
+            }
+        """)
+        channel_box_layout = QVBoxLayout(channel_box)
+        channel_box_layout.setContentsMargins(8, 4, 8, 4)
+        
+        self.channel_label = QLabel("42", channel_box)
+        self.channel_label.setAlignment(Qt.AlignCenter)
+        self.channel_label.setStyleSheet("""
+            color: #000000;
+            font-size: 36pt;
+            font-weight: bold;
+            font-family: 'Consolas', 'Courier New', monospace;
+            background: transparent;
+            border: none;
+            letter-spacing: 6px;
+        """)
+        channel_box_layout.addWidget(self.channel_label)
+        left_layout.addWidget(channel_box)
+        
+        main_display_layout.addLayout(left_layout, 4)
+        
+        # Right side - Volume bar (vertical)
+        self.signal_bar = QProgressBar(display_frame)
+        self.signal_bar.setRange(0, 100)
+        self.signal_bar.setValue(0)
+        self.signal_bar.setOrientation(Qt.Vertical)
+        self.signal_bar.setTextVisible(False)
+        self.signal_bar.setMaximumWidth(12)
+        self.signal_bar.setMinimumHeight(60)
+        self.signal_bar.setStyleSheet("""
+            QProgressBar {
+                background: #6a8a77;
+                border: 1px solid #2a2a2a;
+                border-radius: 2px;
+            }
+            QProgressBar::chunk {
+                background: #1a1a1a;
+                border-radius: 1px;
+            }
+        """)
+        main_display_layout.addWidget(self.signal_bar, 0, Qt.AlignRight)
         
         btn1 = QPushButton("🔊", central_widget)
         self.btn1 = btn1
@@ -352,6 +449,14 @@ class MainWindow(QMainWindow):
         self.channel_blink_timer = QTimer()
         self.channel_blink_timer.timeout.connect(self._blink_channel)
         self.channel_blink_state = False
+        
+        # RX hide timer
+        self.rx_hide_timer = QTimer(self)
+        self.rx_hide_timer.setSingleShot(True)
+        self.rx_hide_timer.timeout.connect(lambda: self.rx_received.emit(0, 0))
+        
+        # Connect RX signal
+        self.rx_received.connect(self._on_rx_received)
         
         self.current_volume = 100
         self.current_ping = 0
@@ -712,41 +817,9 @@ class MainWindow(QMainWindow):
         self._draw_ping_bars()
     
     def _draw_ping_bars(self):
-        if not self.is_connected:
-            self.display_label.setText("")
-            self.display_label.setStyleSheet("""
-                color: #000000; 
-                font-size: 10pt; 
-                font-weight: bold; 
-                background: transparent;
-                letter-spacing: 1px;
-            """)
-            return
-        
-        bars = ""
-        num_bars = 8
-        max_ping = 100
-        filled_bars = int((1 - min(self.current_ping, max_ping) / max_ping) * num_bars)
-        
-        for i in range(num_bars):
-            if i < filled_bars:
-                if filled_bars >= 6:
-                    bars += "█"
-                elif filled_bars >= 4:
-                    bars += "█"
-                else:
-                    bars += "█"
-            else:
-                bars += "░"
-        
-        self.display_label.setText(f"{bars} {self.current_ping}ms")
-        self.display_label.setStyleSheet("""
-            color: #000000; 
-            font-size: 9pt; 
-            font-weight: bold; 
-            background: transparent;
-            font-family: 'Courier New', monospace;
-        """)
+        # Ping bars werden jetzt über latency_label angezeigt
+        # Diese Methode wird aus Kompatibilitätsgründen beibehalten
+        pass
     
     def _play_button_sound(self):
         """Play button click sound"""
@@ -760,8 +833,25 @@ class MainWindow(QMainWindow):
             return
         self.sound_manager.play_sound()
     
+    def open_connection_stats(self):
+        """Open connection statistics dialog"""
+        if not self.network_client:
+            print("⚠️ Kein Network-Client verfügbar")
+            return
+        
+        # Create dialog if not exists
+        if not self.stats_dialog:
+            self.stats_dialog = ConnectionStatsDialog(self.network_client, self)
+        
+        # Show dialog (bring to front if already open)
+        self.stats_dialog.show()
+        self.stats_dialog.raise_()
+        self.stats_dialog.activateWindow()
+    
     def closeEvent(self, event):
         """Cleanup when window is closed"""
+        if self.stats_dialog:
+            self.stats_dialog.close()
         self.sound_manager.cleanup()
         event.accept()
     
@@ -769,7 +859,7 @@ class MainWindow(QMainWindow):
         self._play_button_sound()
         if self.is_connected:
             self.current_volume = min(100, self.current_volume + 10)
-            self.info_label.setText(f"VOL {self.current_volume}%")
+            self.update_volume_display()
             # Update audio output volume
             self.volume_changed.emit(self.current_volume)
     
@@ -777,7 +867,7 @@ class MainWindow(QMainWindow):
         self._play_button_sound()
         if self.is_connected:
             self.current_volume = max(0, self.current_volume - 10)
-            self.info_label.setText(f"VOL {self.current_volume}%")
+            self.update_volume_display()
             # Update audio output volume
             self.volume_changed.emit(self.current_volume)
     
@@ -788,7 +878,7 @@ class MainWindow(QMainWindow):
             self.channel_combo.setCurrentIndex(current_index + 1)
             channel = self.channel_combo.currentData()
             self.pending_channel = channel
-            self.channel_label.setText(f"KANAL {channel}")
+            self.channel_label.setText(f"{channel:02d}")
             # Start blinking if channel changed but not applied
             if not self.channel_blink_timer.isActive():
                 self.channel_blink_timer.start(500)  # Blink every 500ms
@@ -800,23 +890,60 @@ class MainWindow(QMainWindow):
             self.channel_combo.setCurrentIndex(current_index - 1)
             channel = self.channel_combo.currentData()
             self.pending_channel = channel
-            self.channel_label.setText(f"KANAL {channel}")
+            self.channel_label.setText(f"{channel:02d}")
             # Start blinking if channel changed but not applied
             if not self.channel_blink_timer.isActive():
                 self.channel_blink_timer.start(500)  # Blink every 500ms
     
+    def update_signal_strength(self, strength):
+        """Update volume bar (0-100) - kept for compatibility"""
+        # This now updates volume display instead
+        pass
+    
+    def update_volume_display(self):
+        """Update volume bar display"""
+        self.signal_bar.setValue(self.current_volume)
+    
+    def update_latency_display(self, latency_ms):
+        """Update latency display in ms"""
+        if latency_ms > 0 and self.is_connected:
+            self.latency_label.setText(f"{int(latency_ms)}ms")
+        else:
+            self.latency_label.setText("--ms")
+    
+    def _on_rx_received(self, channel, jitter_ms):
+        """Handle RX received signal (called from main thread via signal)"""
+        if channel > 0:
+            self.receiving_from_channel = channel
+            # Zeige Empfangs-Kanal-Box oben rechts
+            self.info_label.setText(f"K{channel:02d}")
+            self.rx_channel_box.show()
+            
+            # Restart hide timer - hide RX after 2 seconds
+            self.rx_hide_timer.stop()
+            self.rx_hide_timer.start(2000)
+        else:
+            self.receiving_from_channel = None
+            self.rx_channel_box.hide()
+    
+    def set_receiving_from(self, channel, jitter_ms=0):
+        """Show which channel is currently receiving from (thread-safe via signal)"""
+        self.rx_received.emit(channel if channel else 0, jitter_ms)
+    
     def _apply_channel(self):
-        """Apply the selected channel and reconnect if necessary"""
+        """Apply the selected channel without reconnecting"""
         self._play_button_sound()
         
-        # Stop blinking
+        # Stop blinking and reset color to black
         self.channel_blink_timer.stop()
         self.channel_label.setStyleSheet("""
-            color: #000000; 
-            font-size: 12pt; 
-            font-weight: bold; 
+            color: #000000;
+            font-size: 36pt;
+            font-weight: bold;
+            font-family: 'Consolas', 'Courier New', monospace;
             background: transparent;
-            letter-spacing: 2px;
+            border: none;
+            letter-spacing: 6px;
         """)
         
         if self.pending_channel is None:
@@ -832,40 +959,31 @@ class MainWindow(QMainWindow):
         self.settings.save()
         
         if self.is_connected:
-            # Reconnect with new channel
-            self.disconnect_requested.emit()
-            server_ip = self.settings.get("server_ip", "127.0.0.1")
-            server_port = self.settings.get("server_port", 50000)
-            api_port = self.settings.get("api_port", 8000)
-            hotkey_primary = self.settings.get("hotkey_primary", "f7")
-            hotkey_secondary = self.settings.get("hotkey_secondary", "f8")
-            mic_device = self.mic_combo.currentData()
-            speaker_device = self.speaker_combo.currentData()
-            funk_key = self.settings.get("funk_key", "")
-            self.connect_requested.emit(
-                server_ip, server_port, channel,
-                hotkey_primary, hotkey_secondary,
-                mic_device, speaker_device, funk_key, api_port
-            )
+            # Just change channel, no reconnect needed
+            self.channel_changed.emit(channel)
     
     def _blink_channel(self):
         """Blink channel label when channel is changed but not applied"""
         self.channel_blink_state = not self.channel_blink_state
         if self.channel_blink_state:
             self.channel_label.setStyleSheet("""
-                color: #ff6600; 
-                font-size: 12pt; 
-                font-weight: bold; 
+                color: #ff6600;
+                font-size: 36pt;
+                font-weight: bold;
+                font-family: 'Consolas', 'Courier New', monospace;
                 background: transparent;
-                letter-spacing: 2px;
+                border: none;
+                letter-spacing: 6px;
             """)
         else:
             self.channel_label.setStyleSheet("""
-                color: #000000; 
-                font-size: 12pt; 
-                font-weight: bold; 
+                color: #000000;
+                font-size: 36pt;
+                font-weight: bold;
+                font-family: 'Consolas', 'Courier New', monospace;
                 background: transparent;
-                letter-spacing: 2px;
+                border: none;
+                letter-spacing: 6px;
             """)
     
     def _show_settings(self):
@@ -1093,17 +1211,25 @@ class MainWindow(QMainWindow):
         noisegate_info.setWordWrap(True)
         audio_layout.addWidget(noisegate_info)
         
+        # Finish Audio tab
+        audio_tab.setLayout(audio_layout)
+        
+        # ===== SIGNALTÖNE TAB =====
+        sounds_tab = QWidget()
+        sounds_layout = QVBoxLayout()
+        sounds_layout.setSpacing(15)
+        sounds_layout.setContentsMargins(20, 20, 20, 20)
+        
         # Sound effects section
-        audio_layout.addSpacing(20)
         sound_label = QLabel("<b>🔔 Signaltöne</b>")
         sound_label.setStyleSheet("font-size: 12pt; color: #00aa00;")
-        audio_layout.addWidget(sound_label)
+        sounds_layout.addWidget(sound_label)
         
         # Enable/Disable sounds
         sounds_enabled = QCheckBox("Signaltöne aktivieren")
         sounds_enabled.setChecked(self.settings.get("sounds_enabled", True))
         sounds_enabled.setStyleSheet("font-size: 10pt; padding: 5px;")
-        audio_layout.addWidget(sounds_enabled)
+        sounds_layout.addWidget(sounds_enabled)
         
         # Volume slider
         sound_volume_layout = QHBoxLayout()
@@ -1126,7 +1252,7 @@ class MainWindow(QMainWindow):
         
         sound_volume_slider.valueChanged.connect(lambda v: sound_volume_value_label.setText(f"{v}%"))
         sounds_enabled.toggled.connect(sound_volume_slider.setEnabled)
-        audio_layout.addLayout(sound_volume_layout)
+        sounds_layout.addLayout(sound_volume_layout)
         
         # Test sound button
         test_sound_btn = QPushButton("🔔 Ton testen")
@@ -1151,16 +1277,16 @@ class MainWindow(QMainWindow):
                 self.sound_manager.play_sound()
         
         test_sound_btn.clicked.connect(test_sound)
-        audio_layout.addWidget(test_sound_btn)
+        sounds_layout.addWidget(test_sound_btn)
         
         # Sound info
         sound_info = QLabel("ℹ️ Signaltöne werden bei Tastendrücken und Kanalwechsel abgespielt.")
         sound_info.setStyleSheet("color: #666; font-size: 9pt; padding: 5px;")
         sound_info.setWordWrap(True)
-        audio_layout.addWidget(sound_info)
+        sounds_layout.addWidget(sound_info)
         
-        # Finish Audio tab
-        audio_tab.setLayout(audio_layout)
+        sounds_layout.addStretch()
+        sounds_tab.setLayout(sounds_layout)
         
         # ===== HOTKEYS TAB =====
         hotkeys_tab = QWidget()
@@ -1463,6 +1589,7 @@ class MainWindow(QMainWindow):
         
         # Add all tabs to tab widget
         tab_widget.addTab(audio_tab, "🎧 Audio")
+        tab_widget.addTab(sounds_tab, "🔔 Signaltöne")
         tab_widget.addTab(hotkeys_tab, "⌨️ Hotkeys")
         tab_widget.addTab(network_tab, "🌐 Netzwerk")
         
@@ -1572,6 +1699,7 @@ class MainWindow(QMainWindow):
             
             # Update sound manager volume
             self.sound_manager.set_volume(sound_volume_slider.value())
+            
             self.settings.save()
             print("✔️ Einstellungen gespeichert!")
             
@@ -1822,22 +1950,9 @@ class MainWindow(QMainWindow):
             self.current_ping = 20
             self._draw_ping_bars()
             channel = self.channel_combo.currentData()
-            self.channel_label.setText(f"KANAL {channel}")
-            self.channel_label.setStyleSheet("""
-                color: #000000; 
-                font-size: 12pt; 
-                font-weight: bold; 
-                background: transparent;
-                letter-spacing: 2px;
-            """)
-            self.info_label.setText(f"VOL {self.current_volume}%")
-            self.info_label.setStyleSheet("""
-                color: #000000; 
-                font-size: 8pt; 
-                font-weight: bold;
-                background: transparent;
-                letter-spacing: 1px;
-            """)
+            self.channel_label.setText(f"{channel:02d}")
+            # Keep 7-segment style
+            self.update_volume_display()
             self.server_input.setEnabled(False)
             self.port_input.setEnabled(False)
             self.channel_combo.setEnabled(False)
@@ -1850,22 +1965,9 @@ class MainWindow(QMainWindow):
             self.ping_timer.stop()
             self._draw_ping_bars()
             channel = self.channel_combo.currentData()
-            self.channel_label.setText(f"KANAL {channel}")
-            self.channel_label.setStyleSheet("""
-                color: #000000; 
-                font-size: 12pt; 
-                font-weight: bold; 
-                background: transparent;
-                letter-spacing: 2px;
-            """)
-            self.info_label.setText("BEREIT")
-            self.info_label.setStyleSheet("""
-                color: #000000; 
-                font-size: 8pt; 
-                font-weight: bold;
-                background: transparent;
-                letter-spacing: 1px;
-            """)
+            self.channel_label.setText(f"{channel:02d}")
+            # Keep 7-segment style
+            self.info_label.hide()
             self.server_input.setEnabled(True)
             self.port_input.setEnabled(True)
             self.channel_combo.setEnabled(True)
@@ -1892,20 +1994,19 @@ class MainWindow(QMainWindow):
                 self.led_label.setStyleSheet("background: #333333; border: 1px solid #555555; border-radius: 6px;")
 
     def show_error(self, message):
-        self.display_label.setText("ERROR!")
-        self.display_label.setStyleSheet("""
-            color: #ff0000; 
-            font-size: 11pt; 
-            font-weight: bold; 
-            background: transparent;
-        """)
-        self.info_label.setText(message)
-        self.info_label.setStyleSheet("""
-            color: #ff0000; 
-            font-size: 7pt; 
-            background: transparent;
-        """)
-        self.info_label.setText(message[:20])
+        # Zeige ERROR im Latenz-Kasten
+        self.latency_label.setText("ERR!")
+        # Zeige Fehler im unteren Kanal-Kasten
+        self.info_label.setText(message[:15])
+        self.rx_channel_box.show()
+        
+        # Nach 3 Sekunden zurück zu normal (mit Timer im Main-Thread)
+        if hasattr(self, 'error_timer'):
+            self.error_timer.stop()
+        self.error_timer = QTimer(self)
+        self.error_timer.setSingleShot(True)
+        self.error_timer.timeout.connect(lambda: self.rx_channel_box.hide())
+        self.error_timer.start(3000)
         self.info_label.setStyleSheet("""
             color: #ff0000; 
             font-size: 7pt; 

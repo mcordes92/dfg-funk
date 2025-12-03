@@ -4,6 +4,7 @@ import webbrowser
 import time
 import threading
 from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtCore import QTimer
 from gui import MainWindow
 from audio_in import AudioInput
 from audio_out import AudioOutput
@@ -15,7 +16,7 @@ from logger import setup_logger, log_exception
 logger = setup_logger()
 
 # Client version
-CLIENT_VERSION = "1.8.0"
+CLIENT_VERSION = "1.9.4"
 
 
 class FunkClient:
@@ -37,12 +38,14 @@ class FunkClient:
         self.rx_session_timeout = 3.0  # Seconds of silence before new RX sound
         self.tx_start_timer = None  # Timer for delayed TX start
         self.pending_tx_type = None  # Track which hotkey was pressed
+        self.signal_update_timer = None  # Timer for signal strength updates
 
     def initialize(self):
         self.window = MainWindow()
         self.window.connect_requested.connect(self.on_connect)
         self.window.disconnect_requested.connect(self.on_disconnect)
         self.window.volume_changed.connect(self.on_volume_changed)
+        self.window.channel_changed.connect(self.on_channel_changed)
         
         self.window.show()
         
@@ -203,9 +206,17 @@ class FunkClient:
             )
             self.network.connect()
             
+            # Set network client reference for stats dialog
+            self.window.network_client = self.network
+            
             self.audio_output.start()
             
             self.hotkey_manager.enable()
+            
+            # Start signal strength update timer
+            self.signal_update_timer = QTimer()
+            self.signal_update_timer.timeout.connect(self._update_signal_display)
+            self.signal_update_timer.start(1000)  # Update every second
             
             # Connection status will be set by on_connection_status callback
             
@@ -218,9 +229,29 @@ class FunkClient:
     def on_disconnect(self):
         self.cleanup_connection()
         self.window.set_connected(False)
+    
+    def on_channel_changed(self, channel):
+        """Change channel without reconnecting"""
+        if self.network and self.is_connected:
+            logger.info(f"🔀 Kanalwechsel: {self.network.channel_id} → {channel}")
+            self.network.set_channel(channel)
+            self.primary_channel = channel
+            self.current_channel = channel
+            logger.info(f"✅ Kanal gewechselt zu {channel}")
 
     def cleanup_connection(self):
         self.is_connected = False
+        
+        # Stop timers
+        if self.signal_update_timer:
+            self.signal_update_timer.stop()
+            self.signal_update_timer = None
+        
+        # rx_hide_timer is now in GUI, not here
+        
+        # Reset displays
+        self.window.update_signal_strength(0)
+        self.window.set_receiving_from(None)
         
         if self.hotkey_manager:
             self.hotkey_manager.disable()
@@ -262,7 +293,7 @@ class FunkClient:
             self.window.show_error("Verbindung verloren!")
         self.on_disconnect()
     
-    def on_audio_received(self, audio_data):
+    def on_audio_received(self, audio_data, sender_channel=None):
         if self.is_connected and self.audio_output:
             current_time = time.time()
             
@@ -273,14 +304,44 @@ class FunkClient:
             
             self.last_rx_time = current_time
             self.audio_output.play_audio(audio_data)
+            
+            # Show RX indicator with sender's channel and jitter stats
+            if self.network and self.audio_output:
+                if sender_channel:
+                    # Get jitter buffer stats
+                    stats = self.audio_output.get_jitter_buffer_stats()
+                    jitter_ms = stats.get('queue_size', 0) * 20  # Each frame is ~20ms
+                    
+                    self.window.set_receiving_from(sender_channel, jitter_ms)
+                else:
+                    logger.warning("⚠️ Empfangener Audio-Frame ohne sender_channel!")
 
+    def _update_signal_display(self):
+        """Update signal strength bar and latency from connection quality"""
+        if self.network and self.is_connected:
+            quality = self.network.get_connection_quality()
+            signal_strength = quality.get('signal_strength', 0)
+            latency_ms = quality.get('latency_ms', 0)
+            self.window.update_signal_strength(signal_strength)
+            self.window.update_latency_display(latency_ms)
+        else:
+            self.window.update_signal_strength(0)
+            self.window.update_latency_display(0)
+    
     def on_hotkey_press(self, hotkey_type):
         logger.debug(f"Hotkey gedrückt: {hotkey_type}, connected={self.is_connected}")
         if self.is_connected and self.audio_input and self.network:
-            if hotkey_type == 'primary':
-                self.current_channel = self.primary_channel
-            else:
-                self.current_channel = self.secondary_channel
+            # Determine transmit channel
+            # Primary: Use current_channel (set by quick-switch F7/F8)
+            # Secondary: Use secondary_channel (41) temporarily
+            if hotkey_type == 'secondary':
+                transmit_channel = self.secondary_channel
+            else:  # primary
+                transmit_channel = self.current_channel
+            
+            # Switch transmit channel without re-authentication (both channels already registered)
+            self.network.set_transmit_channel(transmit_channel)
+            logger.info(f"📡 Sende-Kanal gesetzt: {transmit_channel} ({hotkey_type})")
             
             # Play TX start sound (1.mp3)
             self.window.sound_manager.play_tx_start()
@@ -302,10 +363,10 @@ class FunkClient:
     def _start_transmission(self):
         """Start actual transmission after TX sound delay"""
         if self.pending_tx_type and self.is_connected and self.audio_input and self.network:
-            self.network.set_channel(self.current_channel)
+            # Channel already set in on_hotkey_press
             self.audio_input.start_recording()
             self.window.show_transmitting(True, self.pending_tx_type)
-            logger.info(f"🎤 Sende auf Kanal {self.current_channel}")
+            logger.info(f"🎙️ Sende auf Kanal {self.network.channel_id}")
 
     def on_hotkey_release(self, hotkey_type):
         # Cancel pending transmission if released before timer fires
@@ -324,6 +385,7 @@ class FunkClient:
     def on_channel_switch(self, channel_type):
         """Handle quick-switch channel hotkeys"""
         if not self.is_connected or not self.network:
+            logger.warning("⚠️ Kanalwechsel nicht möglich - nicht verbunden")
             return
         
         target_channel = None
@@ -332,17 +394,28 @@ class FunkClient:
         elif channel_type == 'channel2':
             target_channel = self.channel2_target
         
-        if target_channel and target_channel != self.current_channel:
-            logger.info(f"🔀 Kanalwechsel: {self.current_channel} → {target_channel}")
+        if not target_channel:
+            logger.warning(f"⚠️ Kein Zielkanal für {channel_type} konfiguriert")
+            return
+        
+        # Check if target channel is allowed
+        if target_channel not in self.window.allowed_channels:
+            logger.warning(f"⚠️ Kanal {target_channel} ist nicht erlaubt")
+            return
+        
+        if target_channel != self.current_channel:
+            logger.info(f"🔀 Schnell-Kanalwechsel: {self.current_channel} → {target_channel}")
             self.current_channel = target_channel
-            self.network.set_channel(target_channel)
+            # Use set_transmit_channel for instant switch without re-auth
+            self.network.set_transmit_channel(target_channel)
             # Play channel switch sound
             self.window._play_channel_switch_sound()
             # Update GUI to show new channel
+            self.window.channel_label.setText(f"{target_channel:02d}")
+            # Update channel combo box
             for i in range(self.window.channel_combo.count()):
                 if self.window.channel_combo.itemData(i) == target_channel:
                     self.window.channel_combo.setCurrentIndex(i)
-                    self.window.channel_label.setText(f"KANAL {target_channel}")
                     break
     
     def on_volume_changed(self, volume_percent):
@@ -366,6 +439,8 @@ def main():
         app = QApplication(sys.argv)
         
         client = FunkClient()
+        # Make client accessible to GUI for mic level updates
+        app.client = client
         client.initialize()
         
         exit_code = app.exec()

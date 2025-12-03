@@ -12,13 +12,21 @@ class ClientRegistry:
     def register_client(self, client_address, channel_id, user_id):
         with self.lock:
             client_key = client_address
-            self.clients[client_key] = {
-                'address': client_address,
-                'channel_id': channel_id,
-                'user_id': user_id,
-                'last_seen': time.time()
-            }
             
+            # Initialize or update client info
+            if client_key not in self.clients:
+                self.clients[client_key] = {
+                    'address': client_address,
+                    'channel_ids': set(),  # Multiple channels per client
+                    'user_id': user_id,
+                    'last_seen': time.time()
+                }
+            
+            # Add channel to client's channel list
+            self.clients[client_key]['channel_ids'].add(channel_id)
+            self.clients[client_key]['last_seen'] = time.time()
+            
+            # Add client to channel's client list
             if channel_id not in self.channels:
                 self.channels[channel_id] = set()
             self.channels[channel_id].add(client_key)
@@ -49,11 +57,12 @@ class ClientRegistry:
             
             for client_key in stale_clients:
                 client_info = self.clients[client_key]
-                channel_id = client_info['channel_id']
-                if channel_id in self.channels:
-                    self.channels[channel_id].discard(client_key)
-                    if not self.channels[channel_id]:
-                        del self.channels[channel_id]
+                # Remove client from all channels
+                for channel_id in client_info.get('channel_ids', set()):
+                    if channel_id in self.channels:
+                        self.channels[channel_id].discard(client_key)
+                        if not self.channels[channel_id]:
+                            del self.channels[channel_id]
                 del self.clients[client_key]
             
             return len(stale_clients)

@@ -1,7 +1,7 @@
 """
 FastAPI REST API Server for Funk System Administration and Authentication
 """
-from fastapi import FastAPI, HTTPException, Depends, status, Header, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, status, Header, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -14,9 +14,13 @@ import secrets
 import hashlib
 import shutil
 import json
+import asyncio
+import threading
 from pathlib import Path
 from dotenv import load_dotenv
 from database import Database
+from test_tone import generate_test_tone, get_test_tone_info
+from protocol import build_packet, PACKET_TYPE_AUDIO
 
 # Load environment variables from .env file
 load_dotenv()
@@ -43,6 +47,14 @@ if os.path.exists(web_dir):
 
 # Database instance
 db = Database()
+
+# UDP Server instance (set by run_server.py)
+udp_server_instance = None
+
+def set_udp_server(server):
+    """Set UDP server instance for test tone functionality"""
+    global udp_server_instance
+    udp_server_instance = server
 
 # Session management
 admin_sessions = {}  # {token: {"username": str, "expires": datetime}}
@@ -571,6 +583,84 @@ async def get_update_info(admin_token: str = Depends(verify_admin_token)):
         "exe_exists": exe_exists,
         "exe_size": exe_size,
         "updates_dir": str(get_updates_dir())
+    }
+
+@app.post("/api/channels/{channel_id}/test-tone")
+async def send_test_tone(channel_id: int, background_tasks: BackgroundTasks, admin_token: str = Depends(verify_admin_token)):
+    """
+    Send a test tone to a specific channel (admin only)
+    
+    This sends a 1kHz sine wave for 1.5 seconds at 20% volume to all clients on the channel
+    """
+    # Validate channel
+    if channel_id < 41 or channel_id > 72:
+        raise HTTPException(status_code=400, detail="Channel ID must be between 41 and 72")
+    
+    # Check if UDP server is available
+    if udp_server_instance is None:
+        raise HTTPException(status_code=503, detail="UDP server not available")
+    
+    # Get channel info
+    channel_info = db.get_channel(channel_id)
+    if not channel_info:
+        raise HTTPException(status_code=404, detail=f"Channel {channel_id} not found")
+    
+    # Generate test tone in background
+    def send_tone():
+        try:
+            # Generate PCM frames
+            frames = generate_test_tone()
+            
+            # Use system user ID 255 for test tones
+            system_user_id = 255
+            sequence_number = 0
+            
+            # Check if we need Opus encoding
+            try:
+                import opuslib
+                # Encode with Opus
+                encoder = opuslib.Encoder(48000, 1, opuslib.APPLICATION_VOIP)
+                encoder.bitrate = 24000
+                
+                encoded_frames = []
+                for pcm_frame in frames:
+                    opus_data = encoder.encode(pcm_frame, 960)
+                    encoded_frames.append(opus_data)
+                
+                frames = encoded_frames
+                print(f"✅ Test tone encoded with Opus ({len(frames)} frames)")
+            except (ImportError, OSError) as e:
+                # Send raw PCM if Opus not available
+                print(f"⚠️  Opus not available ({e}), sending raw PCM")
+            
+            # Send frames to channel
+            for frame in frames:
+                packet = build_packet(channel_id, system_user_id, sequence_number, frame, PACKET_TYPE_AUDIO)
+                
+                # Forward to all clients on this channel
+                udp_server_instance.forward_to_channel(channel_id, packet, system_user_id)
+                
+                sequence_number = (sequence_number + 1) % 65536
+                
+                # Small delay between frames (20ms per frame)
+                import time
+                time.sleep(0.02)
+            
+            print(f"✅ Test tone sent to channel {channel_id} ({len(frames)} frames)")
+            
+        except Exception as e:
+            print(f"❌ Error sending test tone: {e}")
+    
+    # Send in background thread
+    background_tasks.add_task(send_tone)
+    
+    tone_info = get_test_tone_info()
+    
+    return {
+        "success": True,
+        "message": f"Test tone sending to channel {channel_id}",
+        "channel_name": channel_info['name'],
+        "tone_info": tone_info
     }
 
 if __name__ == "__main__":

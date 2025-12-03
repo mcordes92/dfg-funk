@@ -133,7 +133,8 @@ class AudioInput:
             if self.level_callback:
                 self.level_callback(level_db)
             
-            if self.is_recording and self.callback:
+            # Process audio for recording
+            if self.is_recording:
                 filtered, self.zi = signal.sosfilt(self.sos, audio, zi=self.zi)
                 
                 # Apply Automatic Gain Control (AGC)
@@ -141,6 +142,9 @@ class AudioInput:
                     filtered = self._apply_agc(filtered)
                 
                 compressed = np.tanh(filtered * 2.0) * 0.9
+                
+                # Convert to PCM int16
+                pcm_data = (compressed * 32767).astype(np.int16).tobytes()
                 
                 # Voice Activity Detection
                 should_send = True
@@ -152,13 +156,14 @@ class AudioInput:
                     # WebRTC VAD expects 10/20/30ms frames at 8/16/32/48kHz
                     # We use 20ms at 48kHz (960 samples)
                     try:
-                        is_speech = self.vad.is_speech(pcm_int16, self.sample_rate)
+                        pcm_int16_vad = pcm_data  # Use already converted data
+                        is_speech = self.vad.is_speech(pcm_int16_vad, self.sample_rate)
                         should_send = is_speech
                     except Exception as e:
                         # Fallback to noise gate on VAD error
                         should_send = level_db > self.noise_gate_threshold
                 
-                elif self.noise_gate_enabled:
+                elif self.is_recording and self.noise_gate_enabled:
                     # Simple noise gate fallback
                     if level_db > self.noise_gate_threshold:
                         self.gate_open = True
@@ -171,11 +176,8 @@ class AudioInput:
                     
                     should_send = self.gate_open
                 
-                # Send audio if gate is open (or noise gate disabled)
-                if should_send:
-                    # Convert to PCM int16
-                    pcm_data = (compressed * 32767).astype(np.int16).tobytes()
-                    
+                # Send audio if gate is open (or noise gate disabled) AND recording is active
+                if should_send and self.is_recording and self.callback:
                     # Encode with Opus if enabled
                     if self.use_opus and self.opus_encoder:
                         try:
@@ -184,10 +186,16 @@ class AudioInput:
                         except Exception as e:
                             print(f"❌ Opus encoding failed: {e}")
                             # Fallback to PCM
-                            self.callback(pcm_data)
+                            try:
+                                self.callback(pcm_data)
+                            except Exception as e2:
+                                print(f"❌ Callback failed: {e2}")
                     else:
                         # Send RAW PCM
-                        self.callback(pcm_data)
+                        try:
+                            self.callback(pcm_data)
+                        except Exception as e:
+                            print(f"❌ Callback failed: {e}")
 
     def start_recording(self):
         with self.lock:

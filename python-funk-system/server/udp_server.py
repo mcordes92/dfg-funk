@@ -121,6 +121,9 @@ class UDPServer:
                 
                 print(f"✅ User {user['username']} authenticated for channel {channel_id}")
                 
+                # Register client immediately in this channel
+                self.client_registry.register_client(client_address, channel_id, user['id'])
+                
                 # Send auth success
                 auth_ok = build_auth_ok_packet(channel_id, user_id)
                 self.socket.sendto(auth_ok, client_address)
@@ -207,3 +210,35 @@ class UDPServer:
             "bytes_in": self.traffic_bytes_in,
             "bytes_out": self.traffic_bytes_out
         }
+    
+    def forward_to_channel(self, channel_id, packet, exclude_user_id=None):
+        """
+        Forward a packet to all clients in a specific channel
+        
+        Args:
+            channel_id: Target channel ID
+            packet: Complete packet data to send
+            exclude_user_id: Optional user ID to exclude from receiving (e.g., sender)
+        """
+        if not self.running or not self.socket:
+            return
+        
+        # Get all authenticated clients in the channel
+        recipients = self.client_registry.get_clients_in_channel(channel_id)
+        
+        sent_count = 0
+        for recipient_address in recipients:
+            # Skip if this is the excluded user
+            if exclude_user_id is not None:
+                client_info = self.authenticated_clients.get(recipient_address)
+                if client_info and client_info.get('user_id') == exclude_user_id:
+                    continue
+            
+            try:
+                self.socket.sendto(packet, recipient_address)
+                self.traffic_bytes_out += len(packet)
+                sent_count += 1
+            except Exception as e:
+                print(f"Failed to send to {recipient_address}: {e}")
+        
+        return sent_count

@@ -11,7 +11,8 @@ class NetworkClient:
     def __init__(self, server_ip, server_port, channel_id, user_id, audio_callback, connection_callback=None, disconnect_callback=None, funk_key=None):
         self.server_ip = server_ip
         self.server_port = server_port
-        self.channel_id = channel_id
+        self.channel_id = channel_id  # Primary channel (for sending)
+        self.secondary_channel = 41  # Always connected to channel 41
         self.user_id = user_id
         self.audio_callback = audio_callback
         self.connection_callback = connection_callback
@@ -23,7 +24,8 @@ class NetworkClient:
         self.sequence_number = 0
         self.lock = threading.Lock()
         self.connection_confirmed = False
-        self.authenticated = False
+        self.authenticated = False  # Primary channel auth status
+        self.secondary_authenticated = False  # Secondary channel auth status
         self.auth_error = None
         self.last_packet_time = None
         self.watchdog_thread = None
@@ -43,6 +45,8 @@ class NetworkClient:
         self.packets_sent = 0
         self.packets_received = 0
         self.signal_strength = 100  # 0-100%
+        self.jitter_ms = 0  # Jitter in milliseconds
+        self.last_latencies = []  # Store last 10 latencies for jitter calculation
         self.quality_callback = None  # Callback for UI updates
 
     def connect(self):
@@ -76,10 +80,11 @@ class NetworkClient:
             self.keepalive_thread = threading.Thread(target=self._keepalive_loop, daemon=True)
             self.keepalive_thread.start()
             
-            # Send authentication packet
+            # Send authentication packets for both channels
             if self.funk_key:
-                self._send_auth()
-                logger.debug(f"Warte auf AUTH_OK vom Server... (Socket: {self.socket.getsockname()})")
+                self._send_auth_primary()
+                self._send_auth_secondary()
+                logger.debug(f"Warte auf AUTH_OK vom Server... (Primär: {self.channel_id}, Sekundär: {self.secondary_channel})")
             else:
                 logger.error("⚠️ Kein Funk-Schlüssel vorhanden!")
             
@@ -95,14 +100,23 @@ class NetworkClient:
             if self.auto_reconnect_enabled:
                 self._schedule_reconnect()
     
-    def _send_auth(self):
-        """Send authentication packet to server"""
+    def _send_auth_primary(self):
+        """Send authentication packet for primary channel"""
         try:
             auth_packet = build_auth_packet(self.channel_id, self.user_id, self.funk_key)
             bytes_sent = self.socket.sendto(auth_packet, (self.server_ip, self.server_port))
-            logger.info(f"🔑 Authentifizierung gesendet für Kanal {self.channel_id} ({bytes_sent} bytes an {self.server_ip}:{self.server_port})")
+            logger.info(f"🔑 Authentifizierung gesendet für Primär-Kanal {self.channel_id} ({bytes_sent} bytes)")
         except Exception as e:
-            logger.error(f"Fehler bei Authentifizierung: {e}", exc_info=True)
+            logger.error(f"Fehler bei Authentifizierung (Primär): {e}", exc_info=True)
+    
+    def _send_auth_secondary(self):
+        """Send authentication packet for secondary channel 41"""
+        try:
+            auth_packet = build_auth_packet(self.secondary_channel, self.user_id, self.funk_key)
+            bytes_sent = self.socket.sendto(auth_packet, (self.server_ip, self.server_port))
+            logger.info(f"🔑 Authentifizierung gesendet für Sekundär-Kanal {self.secondary_channel} ({bytes_sent} bytes)")
+        except Exception as e:
+            logger.error(f"Fehler bei Authentifizierung (Sekundär): {e}", exc_info=True)
 
     def disconnect(self, intentional=True):
         """Disconnect from server
@@ -166,9 +180,19 @@ class NetworkClient:
                     
                     # Handle AUTH_OK packets
                     if packet_type == PACKET_TYPE_AUTH_OK:
-                        self.authenticated = True
-                        self.connection_confirmed = True
-                        logger.info("✅ Authentifizierung erfolgreich!")
+                        # Check which channel was authenticated
+                        if channel_id == self.channel_id:
+                            self.authenticated = True
+                            logger.info(f"✅ Authentifizierung erfolgreich für Primär-Kanal {channel_id}!")
+                        elif channel_id == self.secondary_channel:
+                            self.secondary_authenticated = True
+                            logger.info(f"✅ Authentifizierung erfolgreich für Sekundär-Kanal {channel_id}!")
+                        
+                        # Connection is confirmed when both channels are authenticated
+                        if self.authenticated and self.secondary_authenticated:
+                            self.connection_confirmed = True
+                            logger.info("🎉 Beide Kanäle verbunden!")
+                        
                         self.signal_strength = 100
                         continue
                     
@@ -188,7 +212,17 @@ class NetworkClient:
                         if self.ping_sent_time:
                             latency = (time.time() - self.ping_sent_time) * 1000  # Convert to ms
                             self.latency_ms = int(latency)
-                            logger.debug(f"PONG empfangen (Latenz: {self.latency_ms}ms)")
+                            
+                            # Calculate jitter (variation in latency)
+                            self.last_latencies.append(self.latency_ms)
+                            if len(self.last_latencies) > 10:
+                                self.last_latencies.pop(0)
+                            if len(self.last_latencies) >= 2:
+                                jitter_values = [abs(self.last_latencies[i] - self.last_latencies[i-1]) 
+                                               for i in range(1, len(self.last_latencies))]
+                                self.jitter_ms = int(sum(jitter_values) / len(jitter_values))
+                            
+                            logger.debug(f"PONG empfangen (Latenz: {self.latency_ms}ms, Jitter: {self.jitter_ms}ms)")
                             
                             # Update signal strength based on latency
                             if latency < 50:
@@ -207,7 +241,8 @@ class NetworkClient:
                         if packet_count == 1:
                             print(f"Erste Audio-Pakete empfangen...")
                         if self.audio_callback:
-                            self.audio_callback(payload)
+                            # Pass sender's channel_id to callback
+                            self.audio_callback(payload, channel_id)
                         
             except socket.timeout:
                 continue
@@ -284,14 +319,23 @@ class NetworkClient:
                     break
     
     def set_channel(self, channel_id):
+        """Change primary channel with re-authentication (used for settings change)"""
         with self.lock:
             old_channel = self.channel_id
             self.channel_id = channel_id
-            # Re-authenticate for new channel
+            # Re-authenticate for new primary channel (secondary stays connected)
             if self.funk_key and old_channel != channel_id:
-                logger.info(f"Kanal gewechselt: {old_channel} → {channel_id}, authentifiziere neu...")
+                logger.info(f"Primär-Kanal gewechselt: {old_channel} → {channel_id}, authentifiziere neu...")
                 self.authenticated = False
-                self._send_auth()
+                self._send_auth_primary()
+                # Secondary channel 41 bleibt verbunden, keine neue Auth nötig
+    
+    def set_transmit_channel(self, channel_id):
+        """Switch transmit channel without re-authentication (for hotkeys)"""
+        with self.lock:
+            old_channel = self.channel_id
+            self.channel_id = channel_id
+            logger.debug(f"Sende-Kanal gewechselt: {old_channel} → {channel_id} (ohne Re-Auth)")
     
     def _schedule_reconnect(self):
         """Schedule reconnect with exponential backoff"""
@@ -362,6 +406,9 @@ class NetworkClient:
             'latency_ms': self.latency_ms,
             'packet_loss_percent': round(self.packet_loss_rate * 100, 2),
             'signal_strength': self.signal_strength,
+            'packets_sent': self.packets_sent,
+            'packets_received': self.packets_received,
+            'jitter_ms': self.jitter_ms,
             'status': self._get_connection_status(),
             'authenticated': self.authenticated,
             'connected': self.connection_confirmed

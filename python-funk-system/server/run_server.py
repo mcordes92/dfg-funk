@@ -5,7 +5,7 @@ import threading
 from config import SERVER_HOST, SERVER_PORT, TIMEOUT_SECONDS
 from client_registry import ClientRegistry
 from udp_server import UDPServer
-from api_server import start_api_server
+from api_server import start_api_server, set_udp_server
 
 
 def main():
@@ -27,6 +27,9 @@ def main():
     cleanup_thread = threading.Thread(target=udp_server.cleanup_stale_clients, daemon=True)
     cleanup_thread.start()
     print(f"✅ Cleanup thread started (timeout: {TIMEOUT_SECONDS}s)")
+    
+    # Set UDP server reference for API
+    set_udp_server(udp_server)
     
     # Start API server in separate thread
     print("\n[2/2] Starting REST API server...")
