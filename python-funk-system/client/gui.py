@@ -24,8 +24,9 @@ class MainWindow(QMainWindow):
         # Load settings
         self.settings = Settings()
         
-        # Initialize sound manager
-        self.sound_manager = SoundManager()
+        # Initialize sound manager with profile from settings
+        sound_profile = self.settings.get("sound_profile", "digitalfunk")
+        self.sound_manager = SoundManager(sound_profile=sound_profile)
         self.sound_manager.set_volume(self.settings.get("sound_volume", 50))
         
         self.is_connected = False
@@ -1225,6 +1226,29 @@ class MainWindow(QMainWindow):
         sound_label.setStyleSheet("font-size: 12pt; color: #00aa00;")
         sounds_layout.addWidget(sound_label)
         
+        # Sound Profile Selection
+        sound_profile_layout = QHBoxLayout()
+        sound_profile_label = QLabel("Sound-Profil:")
+        sound_profile_label.setMinimumWidth(140)
+        sound_profile_layout.addWidget(sound_profile_label)
+        
+        sound_profile_combo = QComboBox()
+        sound_profile_combo.addItem("📻 Digitalfunk Sound", "digitalfunk")
+        sound_profile_combo.addItem("📡 CB Funk Sound", "cbfunk")
+        
+        # Set current profile
+        current_profile = self.settings.get("sound_profile", "digitalfunk")
+        for i in range(sound_profile_combo.count()):
+            if sound_profile_combo.itemData(i) == current_profile:
+                sound_profile_combo.setCurrentIndex(i)
+                break
+        
+        sound_profile_combo.setStyleSheet("padding: 5px; font-size: 10pt;")
+        sound_profile_layout.addWidget(sound_profile_combo)
+        sounds_layout.addLayout(sound_profile_layout)
+        
+        sounds_layout.addSpacing(10)
+        
         # Enable/Disable sounds
         sounds_enabled = QCheckBox("Signaltöne aktivieren")
         sounds_enabled.setChecked(self.settings.get("sounds_enabled", True))
@@ -1254,9 +1278,15 @@ class MainWindow(QMainWindow):
         sounds_enabled.toggled.connect(sound_volume_slider.setEnabled)
         sounds_layout.addLayout(sound_volume_layout)
         
-        # Test sound button
-        test_sound_btn = QPushButton("🔔 Ton testen")
-        test_sound_btn.setStyleSheet("""
+        sounds_layout.addSpacing(15)
+        
+        # Test sound buttons
+        test_label = QLabel("<b>🔊 Töne testen</b>")
+        test_label.setStyleSheet("font-size: 11pt; color: #333;")
+        sounds_layout.addWidget(test_label)
+        
+        # Button styling
+        test_btn_style = """
             QPushButton {
                 background: #0066cc;
                 color: white;
@@ -1268,19 +1298,57 @@ class MainWindow(QMainWindow):
             QPushButton:hover {
                 background: #0088ff;
             }
-        """)
+        """
         
-        def test_sound():
+        # System sound test button
+        test_system_btn = QPushButton("🔔 System-Ton (Tasten)")
+        test_system_btn.setStyleSheet(test_btn_style)
+        
+        def test_system_sound():
             if sounds_enabled.isChecked():
-                # Update volume for test
                 self.sound_manager.set_volume(sound_volume_slider.value())
                 self.sound_manager.play_sound()
         
-        test_sound_btn.clicked.connect(test_sound)
-        sounds_layout.addWidget(test_sound_btn)
+        test_system_btn.clicked.connect(test_system_sound)
+        sounds_layout.addWidget(test_system_btn)
+        
+        # TX sound test button
+        test_tx_btn = QPushButton("📡 TX-Ton (Sendestart)")
+        test_tx_btn.setStyleSheet(test_btn_style)
+        
+        def test_tx_sound():
+            if sounds_enabled.isChecked():
+                self.sound_manager.set_volume(sound_volume_slider.value())
+                # Update profile first
+                self.sound_manager.set_sound_profile(sound_profile_combo.currentData())
+                self.sound_manager.play_tx_start()
+        
+        test_tx_btn.clicked.connect(test_tx_sound)
+        sounds_layout.addWidget(test_tx_btn)
+        
+        # RX sound test button
+        test_rx_btn = QPushButton("📻 RX-Ton (Empfang)")
+        test_rx_btn.setStyleSheet(test_btn_style)
+        
+        def test_rx_sound():
+            if sounds_enabled.isChecked():
+                self.sound_manager.set_volume(sound_volume_slider.value())
+                # Update profile first
+                self.sound_manager.set_sound_profile(sound_profile_combo.currentData())
+                self.sound_manager.play_rx_start()
+        
+        test_rx_btn.clicked.connect(test_rx_sound)
+        sounds_layout.addWidget(test_rx_btn)
+        
+        # Update test buttons when profile changes
+        def on_profile_changed():
+            # Update sound manager immediately for testing
+            self.sound_manager.set_sound_profile(sound_profile_combo.currentData())
+        
+        sound_profile_combo.currentIndexChanged.connect(on_profile_changed)
         
         # Sound info
-        sound_info = QLabel("ℹ️ Signaltöne werden bei Tastendrücken und Kanalwechsel abgespielt.")
+        sound_info = QLabel("ℹ️ Signaltöne werden bei Tastendrücken, Senden und Empfang abgespielt.")
         sound_info.setStyleSheet("color: #666; font-size: 9pt; padding: 5px;")
         sound_info.setWordWrap(True)
         sounds_layout.addWidget(sound_info)
@@ -1694,11 +1762,13 @@ class MainWindow(QMainWindow):
                 noise_gate_enabled=noisegate_enabled.isChecked(),
                 noise_gate_threshold=threshold_slider.value(),
                 sounds_enabled=sounds_enabled.isChecked(),
-                sound_volume=sound_volume_slider.value()
+                sound_volume=sound_volume_slider.value(),
+                sound_profile=sound_profile_combo.currentData()
             )
             
-            # Update sound manager volume
+            # Update sound manager volume and profile
             self.sound_manager.set_volume(sound_volume_slider.value())
+            self.sound_manager.set_sound_profile(sound_profile_combo.currentData())
             
             self.settings.save()
             print("✔️ Einstellungen gespeichert!")

@@ -10,20 +10,20 @@ logger = logging.getLogger('DFG-Funk')
 class SoundManager:
     """Manages sound playback with volume control using pygame"""
     
-    def __init__(self):
+    def __init__(self, sound_profile="digitalfunk"):
         self.initialized = False
         self.sound = None
-        self.tx_sound = None  # 1.mp3 - Eigener Sendestart
-        self.rx_sound = None  # 2.mp3 - Empfang von anderen
+        self.tx_sound = None  # TX sound based on profile
+        self.rx_sound = None  # RX sound based on profile
         self.volume = 0.5  # Default 50%
+        self.sound_profile = sound_profile  # "digitalfunk" or "cbfunk"
         
         try:
             pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
             self.initialized = True
             self._load_sound()
-            self._load_tx_sound()
-            self._load_rx_sound()
-            logger.info("Sound system initialized")
+            self._load_profile_sounds()
+            logger.info(f"Sound system initialized with profile: {sound_profile}")
         except Exception as e:
             logger.error(f"Failed to initialize sound system: {e}")
     
@@ -59,35 +59,49 @@ class SoundManager:
         except Exception as e:
             logger.error(f"Error loading sound: {e}")
     
-    def _load_tx_sound(self):
-        """Load TX start sound (1.mp3)"""
+    def _load_profile_sounds(self):
+        """Load TX and RX sounds based on active profile"""
+        # Determine filenames based on profile
+        if self.sound_profile == "cbfunk":
+            tx_file = "cb1.mp3"
+            rx_file = "cb2.mp3"
+        else:  # digitalfunk (default)
+            tx_file = "1.mp3"
+            rx_file = "2.mp3"
+        
+        # Load TX sound
         try:
-            sound_path = self._get_sound_path("1.mp3")
-            
-            if sound_path.exists():
-                self.tx_sound = pygame.mixer.Sound(str(sound_path))
+            tx_path = self._get_sound_path(tx_file)
+            if tx_path.exists():
+                self.tx_sound = pygame.mixer.Sound(str(tx_path))
                 self.tx_sound.set_volume(self.volume)
-                logger.info(f"TX sound loaded from {sound_path}")
+                logger.info(f"TX sound loaded from {tx_path}")
             else:
-                logger.warning(f"TX sound not found at {sound_path}")
-                
+                logger.warning(f"TX sound not found at {tx_path}")
         except Exception as e:
             logger.error(f"Error loading TX sound: {e}")
-    
-    def _load_rx_sound(self):
-        """Load RX start sound (2.mp3)"""
+        
+        # Load RX sound
         try:
-            sound_path = self._get_sound_path("2.mp3")
-            
-            if sound_path.exists():
-                self.rx_sound = pygame.mixer.Sound(str(sound_path))
+            rx_path = self._get_sound_path(rx_file)
+            if rx_path.exists():
+                self.rx_sound = pygame.mixer.Sound(str(rx_path))
                 self.rx_sound.set_volume(self.volume)
-                logger.info(f"RX sound loaded from {sound_path}")
+                logger.info(f"RX sound loaded from {rx_path}")
             else:
-                logger.warning(f"RX sound not found at {sound_path}")
-                
+                logger.warning(f"RX sound not found at {rx_path}")
         except Exception as e:
             logger.error(f"Error loading RX sound: {e}")
+    
+    def set_sound_profile(self, profile):
+        """Change sound profile (digitalfunk or cbfunk) and reload sounds"""
+        if profile not in ["digitalfunk", "cbfunk"]:
+            logger.warning(f"Invalid sound profile: {profile}, using digitalfunk")
+            profile = "digitalfunk"
+        
+        self.sound_profile = profile
+        self._load_profile_sounds()
+        logger.info(f"Sound profile changed to: {profile}")
     
     def set_volume(self, volume_percent):
         """Set volume for all sounds (0-100)"""

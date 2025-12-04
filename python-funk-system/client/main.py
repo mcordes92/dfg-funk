@@ -16,7 +16,7 @@ from logger import setup_logger, log_exception
 logger = setup_logger()
 
 # Client version
-CLIENT_VERSION = "1.9.4"
+CLIENT_VERSION = "1.9.6"
 
 
 class FunkClient:
@@ -39,6 +39,10 @@ class FunkClient:
         self.tx_start_timer = None  # Timer for delayed TX start
         self.pending_tx_type = None  # Track which hotkey was pressed
         self.signal_update_timer = None  # Timer for signal strength updates
+        
+        # Priority audio management
+        self.last_primary_audio = 0  # Timestamp of last primary channel audio
+        self.primary_priority_timeout = 2.0  # Seconds to block secondary after primary audio
 
     def initialize(self):
         self.window = MainWindow()
@@ -297,6 +301,21 @@ class FunkClient:
         if self.is_connected and self.audio_output:
             current_time = time.time()
             
+            # Check if this is primary or secondary channel
+            is_primary = (sender_channel == self.primary_channel or sender_channel == self.current_channel)
+            is_secondary = (sender_channel == self.secondary_channel)
+            
+            # Priority logic: Block secondary if primary was active recently
+            if is_secondary:
+                time_since_primary = current_time - self.last_primary_audio
+                if time_since_primary < self.primary_priority_timeout:
+                    logger.debug(f"🚫 Secondary audio blocked - Primary hat Priorität (vor {time_since_primary:.1f}s aktiv)")
+                    return  # Don't play secondary audio
+            
+            # Update primary audio timestamp
+            if is_primary:
+                self.last_primary_audio = current_time
+            
             # Play RX sound if it's been silent for more than rx_session_timeout
             if current_time - self.last_rx_time > self.rx_session_timeout:
                 self.window.sound_manager.play_rx_start()
@@ -338,6 +357,9 @@ class FunkClient:
                 transmit_channel = self.secondary_channel
             else:  # primary
                 transmit_channel = self.current_channel
+                # Mark primary as active for priority blocking
+                self.last_primary_audio = time.time()
+                logger.debug("🎙️ Primary TX gestartet - Secondary Empfang wird blockiert")
             
             # Switch transmit channel without re-authentication (both channels already registered)
             self.network.set_transmit_channel(transmit_channel)
@@ -374,12 +396,21 @@ class FunkClient:
             self.tx_start_timer.cancel()
             self.pending_tx_type = None
             logger.debug("Hotkey zu früh losgelassen, Übertragung abgebrochen")
+            # Update primary timestamp for release too (keeps blocking active)
+            if hotkey_type == 'primary':
+                self.last_primary_audio = time.time()
             return
         
         # Stop active transmission
         if self.audio_input:
             self.audio_input.stop_recording()
         self.window.show_transmitting(False)
+        
+        # Update primary timestamp on release to extend blocking
+        if hotkey_type == 'primary':
+            self.last_primary_audio = time.time()
+            logger.debug("🎙️ Primary TX beendet - Secondary bleibt für 2s blockiert")
+        
         self.pending_tx_type = None
     
     def on_channel_switch(self, channel_type):
