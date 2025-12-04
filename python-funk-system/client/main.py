@@ -12,11 +12,12 @@ from network import NetworkClient
 from hotkeys import HotkeyManager
 from config import USER_ID
 from logger import setup_logger, log_exception
+from overlay_widget import OverlayWidget
 
 logger = setup_logger()
 
 # Client version
-CLIENT_VERSION = "1.9.6"
+CLIENT_VERSION = "2.0.0"
 
 
 class FunkClient:
@@ -43,15 +44,22 @@ class FunkClient:
         # Priority audio management
         self.last_primary_audio = 0  # Timestamp of last primary channel audio
         self.primary_priority_timeout = 2.0  # Seconds to block secondary after primary audio
+        
+        # Overlay widget
+        self.overlay = None
 
     def initialize(self):
         self.window = MainWindow()
+        self.window.funk_client = self  # Set reference for overlay access
         self.window.connect_requested.connect(self.on_connect)
         self.window.disconnect_requested.connect(self.on_disconnect)
         self.window.volume_changed.connect(self.on_volume_changed)
         self.window.channel_changed.connect(self.on_channel_changed)
         
         self.window.show()
+        
+        # Initialize overlay if enabled
+        self._init_overlay()
         
         # Check for updates
         self._check_for_updates()
@@ -63,6 +71,22 @@ class FunkClient:
         else:
             # Load allowed channels if funk_key exists
             self.window._fetch_allowed_channels(funk_key)
+    
+    def _init_overlay(self):
+        """Initialize overlay widget if enabled in settings"""
+        overlay_enabled = self.window.settings.get("overlay_enabled", False)
+        print(f"🔍 Overlay Einstellung: overlay_enabled={overlay_enabled}")
+        if overlay_enabled:
+            self.overlay = OverlayWidget()
+            overlay_position = self.window.settings.get("overlay_position", "top-right")
+            print(f"📍 Setze Overlay Position: {overlay_position}")
+            self.overlay.set_position(overlay_position)
+            print(f"✨ Zeige Overlay an...")
+            self.overlay.show()
+            print(f"✅ Overlay sichtbar: {self.overlay.isVisible()}")
+            logger.info(f"🖥️ Overlay aktiviert (Position: {overlay_position})")
+        else:
+            print("ℹ️ Overlay ist in den Einstellungen deaktiviert")
     
     def _check_for_updates(self):
         """Check for updates from server and prompt user if available"""
@@ -257,6 +281,12 @@ class FunkClient:
         self.window.update_signal_strength(0)
         self.window.set_receiving_from(None)
         
+        # Update overlay
+        if self.overlay:
+            self.overlay.set_connected(False)
+            self.overlay.set_transmitting(False)
+            self.overlay.set_receiving(False)
+        
         if self.hotkey_manager:
             self.hotkey_manager.disable()
             self.hotkey_manager = None
@@ -283,6 +313,9 @@ class FunkClient:
         if success:
             self.is_connected = True
             self.window.set_connected(True)
+            # Update overlay
+            if self.overlay:
+                self.overlay.set_connected(True)
             logger.info(f"✅ Verbindung erfolgreich hergestellt zu Kanal {self.current_channel}")
     
     def on_connection_lost(self):
@@ -332,6 +365,10 @@ class FunkClient:
                     jitter_ms = stats.get('queue_size', 0) * 20  # Each frame is ~20ms
                     
                     self.window.set_receiving_from(sender_channel, jitter_ms)
+                    
+                    # Update overlay
+                    if self.overlay:
+                        self.overlay.set_receiving(True, sender_channel)
                 else:
                     logger.warning("⚠️ Empfangener Audio-Frame ohne sender_channel!")
 
@@ -388,6 +425,11 @@ class FunkClient:
             # Channel already set in on_hotkey_press
             self.audio_input.start_recording()
             self.window.show_transmitting(True, self.pending_tx_type)
+            
+            # Update overlay
+            if self.overlay:
+                self.overlay.set_transmitting(True, self.network.channel_id)
+            
             logger.info(f"🎙️ Sende auf Kanal {self.network.channel_id}")
 
     def on_hotkey_release(self, hotkey_type):
@@ -405,6 +447,10 @@ class FunkClient:
         if self.audio_input:
             self.audio_input.stop_recording()
         self.window.show_transmitting(False)
+        
+        # Update overlay
+        if self.overlay:
+            self.overlay.set_transmitting(False)
         
         # Update primary timestamp on release to extend blocking
         if hotkey_type == 'primary':

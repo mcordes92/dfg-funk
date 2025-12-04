@@ -38,6 +38,7 @@ class MainWindow(QMainWindow):
         # Connection stats dialog
         self.stats_dialog = None
         self.network_client = None  # Will be set from main.py
+        self.funk_client = None  # Will be set from main.py for overlay access
         
         # Window dragging
         self.drag_position = None
@@ -1356,6 +1357,65 @@ class MainWindow(QMainWindow):
         sounds_layout.addStretch()
         sounds_tab.setLayout(sounds_layout)
         
+        # ===== OVERLAY TAB =====
+        overlay_tab = QWidget()
+        overlay_layout = QVBoxLayout()
+        
+        overlay_label = QLabel("<b>🎮 In-Game Overlay</b>")
+        overlay_label.setStyleSheet("font-size: 12pt; color: #00aa00;")
+        overlay_layout.addWidget(overlay_label)
+        
+        overlay_layout.addSpacing(10)
+        
+        # Enable/Disable overlay
+        overlay_enabled = QCheckBox("Overlay aktivieren")
+        overlay_enabled.setChecked(self.settings.get("overlay_enabled", False))
+        overlay_enabled.setStyleSheet("font-size: 10pt; padding: 5px;")
+        overlay_layout.addWidget(overlay_enabled)
+        
+        overlay_layout.addSpacing(10)
+        
+        # Position selector
+        position_layout = QHBoxLayout()
+        position_label = QLabel("📍 Position:")
+        position_label.setMinimumWidth(140)
+        position_layout.addWidget(position_label)
+        
+        position_combo = QComboBox()
+        position_combo.addItem("Oben Links", "top-left")
+        position_combo.addItem("Oben Rechts", "top-right")
+        position_combo.addItem("Mitte Links", "middle-left")
+        position_combo.addItem("Mitte Rechts", "middle-right")
+        position_combo.addItem("Unten Links", "bottom-left")
+        position_combo.addItem("Unten Rechts", "bottom-right")
+        
+        current_position = self.settings.get("overlay_position", "top-right")
+        for i in range(position_combo.count()):
+            if position_combo.itemData(i) == current_position:
+                position_combo.setCurrentIndex(i)
+                break
+        
+        position_combo.setEnabled(overlay_enabled.isChecked())
+        position_combo.setStyleSheet("padding: 5px; font-size: 10pt;")
+        position_layout.addWidget(position_combo)
+        overlay_layout.addLayout(position_layout)
+        
+        # Connect enable checkbox to position combo
+        overlay_enabled.toggled.connect(position_combo.setEnabled)
+        
+        overlay_layout.addSpacing(15)
+        
+        # Info text
+        overlay_info = QLabel("ℹ️ Das Overlay zeigt Verbindungsstatus, TX/RX Kanal während der Übertragung.\n\n"
+                             "🟢 Grün = Verbunden | 🔴 Rot = Getrennt\n"
+                             "🎤 Orange = Sendet | 📻 Blau = Empfängt")
+        overlay_info.setStyleSheet("color: #666; font-size: 9pt; padding: 5px;")
+        overlay_info.setWordWrap(True)
+        overlay_layout.addWidget(overlay_info)
+        
+        overlay_layout.addStretch()
+        overlay_tab.setLayout(overlay_layout)
+        
         # ===== HOTKEYS TAB =====
         hotkeys_tab = QWidget()
         hotkeys_layout = QVBoxLayout()
@@ -1658,6 +1718,7 @@ class MainWindow(QMainWindow):
         # Add all tabs to tab widget
         tab_widget.addTab(audio_tab, "🎧 Audio")
         tab_widget.addTab(sounds_tab, "🔔 Signaltöne")
+        tab_widget.addTab(overlay_tab, "🎮 Overlay")
         tab_widget.addTab(hotkeys_tab, "⌨️ Hotkeys")
         tab_widget.addTab(network_tab, "🌐 Netzwerk")
         
@@ -1763,12 +1824,26 @@ class MainWindow(QMainWindow):
                 noise_gate_threshold=threshold_slider.value(),
                 sounds_enabled=sounds_enabled.isChecked(),
                 sound_volume=sound_volume_slider.value(),
-                sound_profile=sound_profile_combo.currentData()
+                sound_profile=sound_profile_combo.currentData(),
+                overlay_enabled=overlay_enabled.isChecked(),
+                overlay_position=position_combo.currentData()
             )
             
             # Update sound manager volume and profile
             self.sound_manager.set_volume(sound_volume_slider.value())
             self.sound_manager.set_sound_profile(sound_profile_combo.currentData())
+            
+            # Update overlay settings
+            if self.funk_client and hasattr(self.funk_client, 'overlay') and self.funk_client.overlay:
+                # Overlay exists, check if it should be shown/hidden
+                if overlay_enabled.isChecked():
+                    self.funk_client.overlay.set_position(position_combo.currentData())
+                    self.funk_client.overlay.show()
+                else:
+                    self.funk_client.overlay.hide()
+            elif self.funk_client and overlay_enabled.isChecked() and not (hasattr(self.funk_client, 'overlay') and self.funk_client.overlay):
+                # Overlay should be enabled but doesn't exist, create it
+                self.funk_client._init_overlay()
             
             self.settings.save()
             print("✔️ Einstellungen gespeichert!")
